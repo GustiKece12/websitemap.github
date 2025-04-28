@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Optimasi Rute Pengiriman - DeliveryCepat</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+  <style>
+    /* (CSS tetap sama seperti kode kamu sebelumnya) */
+    body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8f9fa; }
+    header { background-color: #0077b6; color: white; padding: 20px; text-align: center; font-size: 24px; font-weight: bold; }
+    .container { display: flex; justify-content: space-between; padding: 20px; max-width: 900px; margin: auto; background-color: white; margin-top: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+    .form-container { width: 45%; }
+    .output-container { width: 45%; padding: 20px; background-color: #f1f1f1; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); overflow-y: auto; max-height: 400px; }
+    form label { display: block; margin-top: 10px; margin-bottom: 5px; font-weight: 600; }
+    form input, form select, form button { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; }
+    #map { height: 70vh; margin-top: 20px; border-radius: 8px; overflow: hidden; }
+    .btn-clear { background-color: #dc3545; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 6px; cursor: pointer; transition: background-color 0.3s; width: 100%; }
+    .btn-clear:hover { background-color: #c82333; }
+  </style>
+</head>
+
+<body>
+
+<header>
+  Optimasi Rute Pengiriman - DeliveryCepat
+</header>
+
+<div class="container">
+  <div class="form-container">
+    <form id="deliveryForm">
+      <label for="origin">Lokasi Pengirim:</label>
+      <input type="text" id="origin" placeholder="Contoh: Jalan Yos Sudarso" required>
+
+      <label for="destination">Lokasi Penerima:</label>
+      <input type="text" id="destination" placeholder="Contoh: Jalan Rajawali" required>
+
+      <label for="priority">Prioritas Pengiriman:</label>
+      <select id="priority" required>
+        <option value="high">Tinggi</option>
+        <option value="medium">Sedang</option>
+        <option value="low">Rendah</option>
+      </select>
+
+      <button type="submit">Hitung Rute Optimal</button>
+    </form>
+
+    <button class="btn-clear" id="clearAll">Hapus Semua Rute & Kendaraan</button>
+  </div>
+
+  <div class="output-container">
+    <h3>Hasil Estimasi</h3>
+    <div id="output"></div>
+  </div>
+</div>
+
+<div id="map"></div>
+
+<script>
+  var map = L.map('map', {
+    center: [-2.2111, 113.9213],
+    zoom: 13,
+    minZoom: 12,
+    maxZoom: 18,
+    maxBounds: [
+      [-2.3500, 113.8000],
+      [-2.0500, 114.0500]
+    ],
+    maxBoundsViscosity: 1.0,
+    dragging: true,
+    touchZoom: true,
+    scrollWheelZoom: true
+  });
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
+
+  var allRoutingControls = [];
+  var allVehicleMarkers = [];
+
+  document.getElementById('deliveryForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+
+    var origin = document.getElementById('origin').value;
+    var destination = document.getElementById('destination').value;
+    var priority = document.getElementById('priority').value;
+
+    try {
+      var coords = await getCoordinates(origin, destination);
+
+      if (!isInPalangkaRaya(coords.origin) || !isInPalangkaRaya(coords.destination)) {
+        alert('Lokasi pengirim dan penerima harus berada di dalam kota Palangka Raya.');
+        return;
+      }
+
+      var routingControl = L.Routing.control({
+        waypoints: [
+          L.latLng(coords.origin.lat, coords.origin.lon),
+          L.latLng(coords.destination.lat, coords.destination.lon)
+        ],
+        lineOptions: {
+          styles: [{ color: getRandomColor(), weight: 5 }]
+        },
+        routeWhileDragging: false,
+        draggableWaypoints: false,
+        addWaypoints: false,
+        show: false
+      }).addTo(map);
+
+      allRoutingControls.push(routingControl);
+
+      // Add markers
+      L.marker([coords.origin.lat, coords.origin.lon], { icon: L.icon({ iconUrl: 'https://upload.wikimedia.org/wikipedia/commons/4/49/Green_circle.png', iconSize: [20, 20] }) }).addTo(map);
+      L.marker([coords.destination.lat, coords.destination.lon], { icon: L.icon({ iconUrl: 'https://upload.wikimedia.org/wikipedia/commons/a/a0/Red_circle.png', iconSize: [20, 20] }) }).addTo(map);
+
+      routingControl.on('routesfound', function(e) {
+        var routes = e.routes;
+        var chosenRoute;
+
+        if (priority === 'high') {
+          chosenRoute = routes.reduce((a, b) => a.summary.totalTime < b.summary.totalTime ? a : b);
+        } else if (priority === 'low') {
+          chosenRoute = routes.reduce((a, b) => a.summary.totalDistance < b.summary.totalDistance ? a : b);
+        } else {
+          chosenRoute = routes[0];
+        }
+
+        var summary = chosenRoute.summary;
+        var distanceKm = summary.totalDistance / 1000;
+        var baseTimeMinutes = summary.totalTime / 60;
+        var factor = getTimeDependentFactor(); // ✨ Tambahan faktor waktu
+        var adjustedTimeMinutes = baseTimeMinutes * factor;
+
+        document.getElementById('output').innerHTML = 
+          `<strong>Lokasi Pengirim:</strong> ${getAddressString(coords.origin.address)}<br>
+           <strong>Lokasi Penerima:</strong> ${getAddressString(coords.destination.address)}<br>
+           <strong>Estimasi Jarak:</strong> ${distanceKm.toFixed(2)} km<br>
+           <strong>Estimasi Waktu Tempuh:</strong> ${adjustedTimeMinutes.toFixed(0)} menit<br>
+           <small style="color: gray;">(Estimasi berdasarkan waktu saat ini)</small>
+        `;
+
+        animateVehicle(chosenRoute.coordinates);
+      });
+
+    } catch (error) {
+      alert('Terjadi kesalahan: ' + error.message);
+    }
+  });
+
+  document.getElementById('clearAll').addEventListener('click', function() {
+    allRoutingControls.forEach(control => map.removeControl(control));
+    allVehicleMarkers.forEach(marker => map.removeLayer(marker));
+    allRoutingControls = [];
+    allVehicleMarkers = [];
+    document.getElementById('output').innerHTML = '';
+  });
+
+  async function getCoordinates(origin, destination) {
+    const baseUrl = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=';
+
+    let resOrigin = await fetch(baseUrl + encodeURIComponent(origin + ", Palangka Raya"));
+    let dataOrigin = await resOrigin.json();
+    if (dataOrigin.length === 0) throw new Error('Lokasi pengirim tidak ditemukan.');
+
+    let resDestination = await fetch(baseUrl + encodeURIComponent(destination + ", Palangka Raya"));
+    let dataDestination = await resDestination.json();
+    if (dataDestination.length === 0) throw new Error('Lokasi penerima tidak ditemukan.');
+
+    return {
+      origin: { lat: parseFloat(dataOrigin[0].lat), lon: parseFloat(dataOrigin[0].lon), address: dataOrigin[0].address },
+      destination: { lat: parseFloat(dataDestination[0].lat), lon: parseFloat(dataDestination[0].lon), address: dataDestination[0].address }
+    };
+  }
+
+  function isInPalangkaRaya(location) {
+    if (!location.address) return false;
+    const city = location.address.city || location.address.town || location.address.village || '';
+    return city.toLowerCase().includes('palangka raya');
+  }
+
+  function getRandomColor() {
+    let letters = '0123456789ABCDEF';
+    let color = '#';
+    for (let i = 0; i < 6; i++) {
+      color += letters[Math.floor(Math.random() * 16)];
+    }
+    return color;
+  }
+
+  function animateVehicle(coordinates) {
+    if (coordinates.length === 0) return;
+
+    let index = 0;
+    let vehicleMarker = L.circleMarker(coordinates[0], {
+      radius: 8,
+      color: 'black',
+      fillColor: 'yellow',
+      fillOpacity: 1
+    }).addTo(map);
+
+    allVehicleMarkers.push(vehicleMarker);
+
+    function move() {
+      if (index < coordinates.length) {
+        vehicleMarker.setLatLng(coordinates[index]);
+        index++;
+        setTimeout(move, 150);
+      }
+    }
+    move();
+  }
+
+  function getAddressString(address) {
+    if (!address) return 'Tidak ditemukan';
+    return [
+      address.road,
+      address.suburb,
+      address.city,
+      address.country
+    ].filter(Boolean).join(', ') || 'Alamat tidak lengkap';
+  }
+
+  function getTimeDependentFactor() {
+    const now = new Date();
+    const hour = now.getHours();
+    if ((hour >= 6 && hour <= 9) || (hour >= 16 && hour <= 19)) {
+      return 1.5; // 50% lebih lambat di jam sibuk
+    }
+    return 1.0; // Normal
+  }
+</script>
+
+</body>
+</html>
